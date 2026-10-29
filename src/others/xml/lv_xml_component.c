@@ -39,6 +39,7 @@ static void process_font_element(lv_xml_parser_state_t * state, const char * typ
 static void process_image_element(lv_xml_parser_state_t * state, const char * type, const char ** attrs);
 static void process_prop_element(lv_xml_parser_state_t * state, const char ** attrs);
 static char * extract_view_content(const char * xml_definition);
+static void scope_free_content(lv_xml_component_scope_t * scope);
 
 /**********************
  *  STATIC VARIABLES
@@ -149,7 +150,9 @@ lv_result_t lv_xml_component_register_from_data(const char * name, const char * 
                      XML_ErrorString(XML_GetErrorCode(parser)),
                      (unsigned long)XML_GetCurrentLineNumber(parser));
         XML_ParserFree(parser);
-        lv_free((char *)state.scope.extends);
+        /* For "globals" state.scope is a by-value copy of the live global scope (the list heads
+         * included), so freeing its content would destroy the registered one. Leave it alone. */
+        if(!globals) scope_free_content(&state.scope);
         return LV_RESULT_INVALID;
     }
 
@@ -171,7 +174,11 @@ lv_result_t lv_xml_component_register_from_data(const char * name, const char * 
         scope->name = lv_strdup(name);
         if(!scope->view_def) {
             LV_LOG_WARN("Failed to extract view content");
-            /* Clean up and return error */
+            /* The scope is already linked into component_scope_ll: take it out before freeing it,
+             * or the next lookup walks a freed node. */
+            lv_ll_remove(&component_scope_ll, scope);
+            lv_free((char *)scope->name);
+            scope_free_content(scope);
             lv_free(scope);
             return LV_RESULT_INVALID;
         }
@@ -246,6 +253,23 @@ lv_result_t lv_xml_component_unregister(const char * name)
     lv_ll_remove(&component_scope_ll, scope);
 
     lv_free((char *)scope->name);
+    scope_free_content(scope);
+    lv_free(scope);
+
+    return LV_RESULT_OK;
+}
+
+/**********************
+ *   STATIC FUNCTIONS
+ **********************/
+
+/**
+ * Free everything a scope owns except its name and the scope struct itself.
+ * Shared by lv_xml_component_unregister() and the failure paths of
+ * lv_xml_component_register_from_data(), where the scope may still be on the stack.
+ */
+static void scope_free_content(lv_xml_component_scope_t * scope)
+{
     lv_free((char *)scope->view_def);
     lv_free((char *)scope->extends);
 
@@ -263,7 +287,6 @@ lv_result_t lv_xml_component_unregister(const char * name)
         lv_free((char *)param->type);
     }
     lv_ll_clear(&scope->param_ll);
-
 
     lv_xml_font_t * font;
     LV_LL_READ(&scope->font_ll, font) {
@@ -286,7 +309,6 @@ lv_result_t lv_xml_component_unregister(const char * name)
     }
     lv_ll_clear(&scope->style_ll);
 
-
     lv_xml_grad_t * grad;
     LV_LL_READ(&scope->gradient_ll, grad) {
         lv_free((char *)grad->name);
@@ -303,15 +325,7 @@ lv_result_t lv_xml_component_unregister(const char * name)
         lv_free(subject->subject);
     }
     lv_ll_clear(&scope->subjects_ll);
-
-    lv_free(scope);
-
-    return LV_RESULT_OK;
 }
-
-/**********************
- *   STATIC FUNCTIONS
- **********************/
 
 static void process_const_element(lv_xml_parser_state_t * state, const char ** attrs)
 {
